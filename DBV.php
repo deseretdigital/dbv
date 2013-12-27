@@ -1,5 +1,4 @@
 <?php
-
 /**
  * Copyright (c) 2012 Victor Stanciu (http://victorstanciu.ro)
  *
@@ -39,6 +38,7 @@ class DBV
     protected $_action = "index";
     protected $_adapter;
     protected $_log = array();
+    protected $_invalidChars = array(DS, '.');
 
     public function authenticate()
     {
@@ -77,6 +77,7 @@ class DBV
                 $class = 'DBV_Adapter_' . DB_ADAPTER;
                 if (class_exists($class)) {
                     $adapter = new $class;
+
                     try {
                         $adapter->connect(DB_HOST, DB_PORT, DB_USERNAME, DB_PASSWORD, DB_NAME);
                         $this->_adapter = $adapter;
@@ -96,14 +97,17 @@ class DBV
         $this->$action();
     }
 
+    /**
+     * Index page
+     */
     public function indexAction()
     {
         if ($this->_getAdapter()) {
             $this->schema = $this->_getSchema();
             $this->revisions = $this->_getRevisions();
-            $this->revision = $this->_getCurrentRevision();
+            $this->pastRevisions = $this->_getPastRevisions();
+            $this->newRevisions = array_diff($this->revisions, $this->pastRevisions);
         }
-
         $this->_view("index");
     }
 
@@ -140,25 +144,43 @@ class DBV
 
     public function revisionsAction()
     {
+        $postRevs = array();
+        $tmpRevs = $_POST['revisions'];
+        $revs = $this->_getRevisions();
+        $pastRevs = $this->_getPastRevisions();
+
+        if(count($tmpRevs)) {
+            foreach($tmpRevs as $rev) {
+                // is it a valid revision?
+                if(in_array($rev, $revs)) {
+                    // if it hasn't been run, lets keep it
+                    if(!in_array($rev, $pastRevs)) {
+                        $postRevs[] = $rev;
+                    }
+                }
+            }
+        }
+
         $revisions = isset($_POST['revisions']) ? array_filter($_POST['revisions'], 'is_numeric') : array();
-        $current_revision = $this->_getCurrentRevision();
 
-        if (count($revisions)) {
-            sort($revisions);
+        if (count($postRevs)) {
 
-            foreach ($revisions as $revision) {
+            foreach ($postRevs as $revision) {
+
                 $files = $this->_getRevisionFiles($revision);
-
                 if (count($files)) {
+                    $filesRan = 0;
                     foreach ($files as $file) {
                         $file = DBV_REVISIONS_PATH . DS . $revision . DS . $file;
                         if (!$this->_runFile($file)) {
                             break 2;
+                        } else {
+                            $filesRan++;
                         }
                     }
                 }
 
-                if ($revision > $current_revision) {
+                if (count($files) == $filesRan) {
                     $this->_setCurrentRevision($revision);
                 }
                 $this->confirm(__("Executed revision #{revision}", array('revision' => "<strong>$revision</strong>")));
@@ -168,7 +190,6 @@ class DBV
         if ($this->_isXMLHttpRequest()) {
             $return = array(
                 'messages' => array(),
-                'revision' => $this->_getCurrentRevision()
             );
             foreach ($this->_log as $message) {
                 $return['messages'][$message['type']][] = $message['message'];
@@ -319,22 +340,37 @@ class DBV
         return $return;
     }
 
+    /**
+     * Get a list of all revisions
+     * @return multitype:string
+     */
     protected function _getRevisions()
     {
         $return = array();
-
         foreach (new DirectoryIterator(DBV_REVISIONS_PATH) as $file) {
-            if ($file->isDir() && !$file->isDot() && is_numeric($file->getBasename())) {
+            if ($file->isDir() && !$file->isDot()) {
                 $return[] = $file->getBasename();
             }
         }
-
-        rsort($return, SORT_NUMERIC);
-
         return $return;
     }
 
-    protected function _getCurrentRevision()
+    /**
+     * Get a list of revisions that have been ran
+     * @return multitype:string
+     */
+    protected function _getPastRevisions()
+    {
+    	$return = array();
+    	foreach (new DirectoryIterator(DBV_META_PATH . DS . 'revisions') as $file) {
+    		if ($file->isFile() && !$file->isDot()) {
+    			$return[] = $file->getBasename();
+    		}
+    	}
+    	return $return;
+    }
+
+    protected function _getCurrentRevisionDep()
     {
         switch (DBV_REVISION_STORAGE) {
             case 'FILE':
@@ -357,12 +393,13 @@ class DBV
     {
         switch (DBV_REVISION_STORAGE) {
             case 'FILE':
-                $file = DBV_META_PATH . DS . 'revision';
-                if (!@file_put_contents($file, $revision)) {
+                $file = DBV_META_PATH . DS . 'revisions' . DS . str_replace($this->_invalidChars, '', $revision);
+                if (!@file_put_contents($file, date('Y-m-d H:i:s'))) {
                     $this->error("Cannot write revision file");
                 }
                 break;
             case 'ADAPTER':
+                throw new DBV_Exception('Adapter storage has not been updated to work with named revisions and out of order execution of revisions');
                 if (!$this->_getAdapter()->setCurrentRevision($revision)){
                     $this->error("Cannot save revision to DB");
                 }
@@ -373,6 +410,11 @@ class DBV
         }
     }
 
+    /**
+     * Get the files in a revision directory
+     * @param string $revision
+     * @return multitype:string
+     */
     protected function _getRevisionFiles($revision)
     {
         $dir = DBV_REVISIONS_PATH . DS . $revision;
@@ -388,6 +430,12 @@ class DBV
         return $return;
     }
 
+    /**
+     * Get the contents of a revision file
+     * @param string $revision
+     * @param string $file
+     * @return string|boolean
+     */
     protected function _getRevisionFileContents($revision, $file)
     {
         $path = DBV_REVISIONS_PATH . DS . $revision . DS . $file;
@@ -403,6 +451,10 @@ class DBV
         $this->_log[] = $item;
     }
 
+    /**
+     * Set an error
+     * @param string $message
+     */
     public function error($message)
     {
         $item = array(

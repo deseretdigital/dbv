@@ -13,12 +13,11 @@
 			<tbody>
 				<?php foreach ($this->revisions as $revision) { ?>
 					<?php
-						$ran = $this->revision >= $revision;
+						$ran = in_array($revision, $this->pastRevisions);
 						$class = array();
 						if ($ran) {
 							$class[] = 'ran';
 						}
-
 						$files = $this->_getRevisionFiles($revision);
 					?>
 					<tr data-revision="<?php echo $revision; ?>"<?php echo count($class) ? ' class="' . implode(' ', $class) . '"'  : ''; ?>>
