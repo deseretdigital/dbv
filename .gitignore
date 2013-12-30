@@ -1,3 +1,6 @@
+*.swo
+*.swp
+*~
 data
 config.php
 .buildpath
